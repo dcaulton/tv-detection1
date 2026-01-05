@@ -5,13 +5,15 @@ metadata:
   namespace: tv-detection
 spec:
   schedule: "*/30 * * * *"
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
   jobTemplate:
     spec:
       template:
         spec:
           containers:
           - name: agent
-            image: local/tv-detection1:v0.1
+            image: ghcr.io/dcaulton/tv-detection1:latest
             envFrom:
             - secretRef:
                 name: tvheadend-creds
