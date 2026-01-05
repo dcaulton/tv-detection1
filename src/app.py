@@ -4,6 +4,8 @@ from ollama import Client
 import mlflow
 from dotenv import load_dotenv
 load_dotenv()
+import time
+from mlflow.exceptions import MlflowException
 
 MLFLOW_TRACKING_URI = os.getenv('MLFLOW_TRACKING_URI')
 OLLAMA_URL = os.getenv('OLLAMA_URL', 'http://localhost:11434')
@@ -71,12 +73,21 @@ def schedule_recording(event):
     return r.status_code == 201
 
 def log_mlflow(events_checked, scheduled):
-    mlflow.set_experiment("tv-detection1")  # Creates if missing
-    with mlflow.start_run():
-        mlflow.log_param("mode", "schedule")
-        mlflow.log_param("events_checked", events_checked)
-        mlflow.log_param("scheduled", scheduled)
-        mlflow.log_metric("success_rate", scheduled / max(1, events_checked))
+    try:
+        mlflow.set_experiment("tv-detection1")
+        with mlflow.start_run():
+            mlflow.log_param("mode", "schedule")
+            mlflow.log_param("events_checked", events_checked)
+            mlflow.log_param("scheduled", scheduled)
+            mlflow.log_metric("success_rate", scheduled / max(1, events_checked))
+    except MlflowException as e:
+        if "NameResolutionError" in str(e):
+            print(f"MLFlow DNS failure: {e} – skipping logging (run incomplete)")
+        else:
+            print(f"MLFlow error: {e} – skipping")
+    except Exception as e:
+        print(f"Unexpected MLFlow log error: {e}")
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
