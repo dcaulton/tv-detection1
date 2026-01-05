@@ -12,18 +12,11 @@ spec:
       template:
         spec:
           containers:
-          - name: agent
+          - name: tv-detection1
             image: ghcr.io/dcaulton/tv-detection1:latest
             envFrom:
             - secretRef:
-                name: tvheadend-creds
-            env:
-            - name: TVHEADEND_URL
-              value: http://10.0.0.170:9981
-            - name: OLLAMA_URL
-              value: http://ollama.ollama.svc.cluster.local:11434
-            - name: MLFLOW_TRACKING_URI
-              value: http://mlflow.mlflow.svc.cluster.local
+                name: tv-detection1-secrets
             volumeMounts:
             - mountPath: /data
               name: data

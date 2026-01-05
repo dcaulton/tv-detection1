@@ -6,15 +6,17 @@ from dotenv import load_dotenv
 load_dotenv()
 
 MLFLOW_TRACKING_URI = os.getenv('MLFLOW_TRACKING_URI')
-if MLFLOW_TRACKING_URI:
-    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-
 OLLAMA_URL = os.getenv('OLLAMA_URL', 'http://localhost:11434')
-ollama_client = Client(host=OLLAMA_URL)
 TVH_URL = os.getenv('TVHEADEND_URL')
 TVH_AUTH = (os.getenv('TVHEADEND_USER'), os.getenv('TVHEADEND_PASS'))
+DB_PATH = os.getenv('DB_PATH', '/data/tv-detection1.db')
 
-DB_PATH = os.getenv('DB_PATH', './tv-detection1.db')
+if not all([TVH_URL, TVH_AUTH[0], TVH_AUTH[1], OLLAMA_URL, MLFLOW_TRACKING_URI]):
+    raise ValueError("Missing required env vars")
+
+ollama_client = Client(host=OLLAMA_URL)
+if MLFLOW_TRACKING_URI:
+    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
