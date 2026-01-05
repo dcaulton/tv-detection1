@@ -1,0 +1,39 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: tv-detection1-scheduler
+  namespace: tv-detection
+spec:
+  schedule: "*/30 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: agent
+            image: local/tv-detection1:v0.1
+            envFrom:
+            - secretRef:
+                name: tvheadend-creds
+            env:
+            - name: TVHEADEND_URL
+              value: http://10.0.0.170:9981
+            - name: OLLAMA_URL
+              value: http://ollama.ollama.svc.cluster.local:11434
+            - name: MLFLOW_TRACKING_URI
+              value: http://mlflow.mlflow.svc.cluster.local
+            volumeMounts:
+            - mountPath: /data
+              name: data
+            resources:
+              requests:
+                cpu: 200m
+                memory: 512Mi
+              limits:
+                cpu: 1000m
+                memory: 1Gi
+          volumes:
+          - name: data
+            hostPath:
+              path: /mnt/data/tv-detection/tv-detection1
+          restartPolicy: OnFailure
