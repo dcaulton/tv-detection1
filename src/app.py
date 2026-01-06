@@ -12,7 +12,7 @@ MLFLOW_TRACKING_URI = os.getenv('MLFLOW_TRACKING_URI')
 OLLAMA_URL = os.getenv('OLLAMA_URL', 'http://localhost:11434')
 TVH_URL = os.getenv('TVHEADEND_URL')
 TVH_AUTH = (os.getenv('TVHEADEND_USER'), os.getenv('TVHEADEND_PASS'))
-DB_PATH = os.getenv('DB_PATH', './tv-detection1.db')
+DB_PATH = os.getenv('DB_PATH', '/data/tv-detection1.db')
 
 if not all([TVH_URL, TVH_AUTH[0], TVH_AUTH[1], OLLAMA_URL, MLFLOW_TRACKING_URI]):
     raise ValueError("Missing required env vars")
