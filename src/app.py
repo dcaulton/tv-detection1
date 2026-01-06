@@ -13,6 +13,7 @@ OLLAMA_URL = os.getenv('OLLAMA_URL', 'http://localhost:11434')
 TVH_URL = os.getenv('TVHEADEND_URL')
 TVH_AUTH = (os.getenv('TVHEADEND_USER'), os.getenv('TVHEADEND_PASS'))
 DB_PATH = os.getenv('DB_PATH', '/data/tv-detection1.db')
+CUSTOM_PROMPT = os.getenv('TV_PROMPT', "Is this worth recording for ML training data (news, weather, local events, interesting content)? Answer ONLY Yes or No + short reason.")
 
 if not all([TVH_URL, TVH_AUTH[0], TVH_AUTH[1], OLLAMA_URL, MLFLOW_TRACKING_URI]):
     raise ValueError("Missing required env vars")
@@ -60,15 +61,20 @@ def fetch_epg():
     
     # Filter to future events manually
     now = int(time.time())
-    future_events = [e for e in all_events if e['stop'] > now]
-    print(f"Future events: {len(future_events)}")
-    return future_events[:100]  # Limit for test/safety
+    one_hour = now + 3600
+    future_events = [e for e in all_events if (e['start'] < one_hour and e['start'] > now)]
+    future_events.sort(key=lambda x: x['start'])  # Earliest first
+    future_events.sort(key=lambda item: (
+                          int(item['channelNumber'].split('.')[0]),  # major number
+                          int(item['channelNumber'].split('.')[1])   # subchannel
+                      ))
+    print(f"Future events (next hour): {len(future_events)}")
+    return future_events
 
 def should_record(prompt):
     resp = ollama_client.chat(model='mistral:7b-instruct-q5_K_M', messages=[{'role':'user','content':prompt}])
     reason = resp['message']['content'].strip()
     return 'yes' in reason.lower(), reason
-#Is this worth recording for ML training data (news, weather, local events, interesting content)? Answer ONLY Yes or No + short reason."""
 
 def schedule_recording(event):
     payload = {
@@ -86,10 +92,10 @@ def get_prompt(event, imdb_info):
     prompt = f"""Chicago OTA TV program:
 Title: {event['title']}
 Description: {event.get('description','')}
-{imdb_info}
+Summary: {imdb_info}
 
-#Is this worth recording for ML training data (football, scifi, world news, history, science news, weather, local events, high-rated shows)?
-Answer ONLY Yes or No + short reason."""
+{CUSTOM_PROMPT}
+"""
     return prompt
 
 def log_mlflow(events_checked, scheduled):
@@ -116,10 +122,12 @@ if __name__ == '__main__':
     init_db()
 
     if args.mode == 'schedule':
+        print(f"=+=+=+=+=+=+=+=+ Filtering EPG events starting in the next hour based on this prompt: {CUSTOM_PROMPT} =+=+=+=+=+=+=+=+")
         events = fetch_epg()  # future_events list
         events_checked = len(events)
         scheduled = 0
         for event in events:
+            start_time = datetime.fromtimestamp(event['start'])
             imdb_info = enrich_with_imdb(event['title'])
             prompt = get_prompt(event, imdb_info)
             yes, reason = should_record(prompt)
@@ -127,9 +135,9 @@ if __name__ == '__main__':
                 if schedule_recording(event):
                     # DB insert if you have it
                     scheduled += 1
-                print(f"Scheduled: {event['title']} - {reason}")
+                print(f"====Scheduled: Channel {event['channelNumber']}   {start_time}   {event['title']} - {reason}")
             else:
-                print(f"Skipped: {event['title']} - {reason}")
+                print(f"====Skipped: Channel {event['channelNumber']}   {start_time}   {event['title']} - {reason}")
         log_mlflow(events_checked, scheduled)
         print(f"Checked {events_checked} events, scheduled {scheduled}")
     elif args.mode == 'test-epg':
