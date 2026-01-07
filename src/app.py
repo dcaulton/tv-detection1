@@ -1,4 +1,5 @@
 import requests, json, os, argparse, sqlite3, time
+import pandas as pd
 from datetime import datetime, timedelta
 from ollama import Client
 import mlflow
@@ -14,7 +15,6 @@ TVH_URL = os.getenv('TVHEADEND_URL')
 TVH_AUTH = (os.getenv('TVHEADEND_USER'), os.getenv('TVHEADEND_PASS'))
 DB_PATH = os.getenv('DB_PATH', '/data/tv-detection1.db')
 CUSTOM_PROMPT = os.getenv('TV_PROMPT', "Is this worth recording for ML training data (news, weather, local events, interesting content)? Answer ONLY Yes or No + short reason.")
-JSON_SUMM_PATH = os.getenv('JSON_SUMMARY_PATH', "/data/show_summary.json")
 
 if not all([TVH_URL, TVH_AUTH[0], TVH_AUTH[1], OLLAMA_URL, MLFLOW_TRACKING_URI]):
     raise ValueError("Missing required env vars")
@@ -99,7 +99,7 @@ Summary: {imdb_info}
 """
     return prompt
 
-def log_mlflow(events_checked, scheduled, show_obj):
+def log_mlflow(events_checked, scheduled, results):
     try:
         mlflow.set_experiment("tv-detection1")
         with mlflow.start_run():
@@ -108,9 +108,20 @@ def log_mlflow(events_checked, scheduled, show_obj):
             mlflow.log_param("events_checked", events_checked)
             mlflow.log_param("scheduled", scheduled)
             mlflow.log_metric("success_rate", scheduled / max(1, events_checked))
-            with open(JSON_SUMM_PATH, "w") as f:
-                json.dump(show_obj, f, indent=2)
-            mlflow.log_artifact(JSON_SUMM_PATH)  
+            if results:
+                df = pd.DataFrame(results)
+                
+                # Optional: sort by start time for nicer view
+                df['start'] = pd.to_datetime(df['start'])
+                df = df.sort_values('start').reset_index(drop=True)
+                
+                # Log as interactive table
+                mlflow.log_table(df, artifact_file="decisions")
+                
+                # Optional: also log as CSV for download
+                mlflow.log_table(df, artifact_file="decisions.csv")
+
+
     except MlflowException as e:
         if "NameResolutionError" in str(e):
             print(f"MLFlow DNS failure: {e} – skipping logging (run incomplete)")
@@ -134,13 +145,13 @@ if __name__ == '__main__':
         scheduled = 0
         all_show_objects = []
         for event in events:
-            start_time = datetime.fromtimestamp(event['start'])
+            start_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(event['start']))
             imdb_info = enrich_with_imdb(event['title'])
             prompt = get_prompt(event, imdb_info)
             yes, reason = should_record(prompt)
             show_obj = {
-                'channel': event['channelNumber'],
-                'start': f'{start_time}',
+                'channel': event.get('channelNumber', 'N/A'),
+                'start': start_time,
                 'title': event['title'],
                 'reason': reason
             }
