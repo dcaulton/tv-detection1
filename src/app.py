@@ -14,6 +14,7 @@ TVH_URL = os.getenv('TVHEADEND_URL')
 TVH_AUTH = (os.getenv('TVHEADEND_USER'), os.getenv('TVHEADEND_PASS'))
 DB_PATH = os.getenv('DB_PATH', '/data/tv-detection1.db')
 CUSTOM_PROMPT = os.getenv('TV_PROMPT', "Is this worth recording for ML training data (news, weather, local events, interesting content)? Answer ONLY Yes or No + short reason.")
+JSON_SUMM_PATH = os.getenv('JSON_SUMMARY_PATH', "/data/show_summary.json")
 
 if not all([TVH_URL, TVH_AUTH[0], TVH_AUTH[1], OLLAMA_URL, MLFLOW_TRACKING_URI]):
     raise ValueError("Missing required env vars")
@@ -98,14 +99,18 @@ Summary: {imdb_info}
 """
     return prompt
 
-def log_mlflow(events_checked, scheduled):
+def log_mlflow(events_checked, scheduled, show_obj):
     try:
         mlflow.set_experiment("tv-detection1")
         with mlflow.start_run():
             mlflow.log_param("mode", "schedule")
+            mlflow.log_param("custom_prompt", CUSTOM_PROMPT)
             mlflow.log_param("events_checked", events_checked)
             mlflow.log_param("scheduled", scheduled)
             mlflow.log_metric("success_rate", scheduled / max(1, events_checked))
+            with open(JSON_SUMM_PATH, "w") as f:
+                json.dump(show_obj, f, indent=2)
+            mlflow.log_artifact(JSON_SUMM_PATH)  
     except MlflowException as e:
         if "NameResolutionError" in str(e):
             print(f"MLFlow DNS failure: {e} – skipping logging (run incomplete)")
@@ -123,22 +128,35 @@ if __name__ == '__main__':
 
     if args.mode == 'schedule':
         print(f"=+=+=+=+=+=+=+=+ Filtering EPG events starting in the next hour based on this prompt: {CUSTOM_PROMPT} =+=+=+=+=+=+=+=+")
+        summary_obj = {'prompt': CUSTOM_PROMPT, 'shows': []}
         events = fetch_epg()  # future_events list
         events_checked = len(events)
         scheduled = 0
+        all_show_objects = []
         for event in events:
             start_time = datetime.fromtimestamp(event['start'])
             imdb_info = enrich_with_imdb(event['title'])
             prompt = get_prompt(event, imdb_info)
             yes, reason = should_record(prompt)
+            show_obj = {
+                'channel': event['channelNumber'],
+                'start': f'{start_time}',
+                'title': event['title'],
+                'reason': reason
+            }
             if yes:
                 if schedule_recording(event):
                     # DB insert if you have it
                     scheduled += 1
+                    show_obj['action'] = 'scheduled ok'
+                else:
+                    show_obj['action'] = 'schedule failed'
                 print(f"====Scheduled: Channel {event['channelNumber']}   {start_time}   {event['title']} - {reason}")
             else:
+                show_obj['action'] = 'skipped'
                 print(f"====Skipped: Channel {event['channelNumber']}   {start_time}   {event['title']} - {reason}")
-        log_mlflow(events_checked, scheduled)
+            all_show_objects.append(show_obj)
+        log_mlflow(events_checked, scheduled, all_show_objects)
         print(f"Checked {events_checked} events, scheduled {scheduled}")
     elif args.mode == 'test-epg':
       events = fetch_epg()
