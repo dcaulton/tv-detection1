@@ -7,14 +7,19 @@ import requests
 from dotenv import load_dotenv
 load_dotenv()
 import time
+import json
 from mlflow.exceptions import MlflowException
 
+DAYS_TO_FETCH=4
 MLFLOW_TRACKING_URI = os.getenv('MLFLOW_TRACKING_URI')
 OLLAMA_URL = os.getenv('OLLAMA_URL', 'http://localhost:11434')
 TVH_URL = os.getenv('TVHEADEND_URL')
 TVH_AUTH = (os.getenv('TVHEADEND_USER'), os.getenv('TVHEADEND_PASS'))
 DB_PATH = os.getenv('DB_PATH', '/data/tv-detection1.db')
 CUSTOM_PROMPT = os.getenv('TV_PROMPT', "Is this worth recording for ML training data (news, weather, local events, interesting content)? Answer ONLY Yes or No + short reason.")
+SD_USER = os.getenv('SD_USER')
+SD_PASS = os.getenv('SD_PASS')
+SD_URL = "https://json.schedulesdirect.org/20141201"
 
 if not all([TVH_URL, TVH_AUTH[0], TVH_AUTH[1], OLLAMA_URL, MLFLOW_TRACKING_URI]):
     raise ValueError("Missing required env vars")
@@ -24,9 +29,205 @@ if MLFLOW_TRACKING_URI:
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
 
 def init_db():
+    print('initializing db')
+
+    create_channel = """
+CREATE TABLE IF NOT EXISTS channel (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    station_id TEXT NOT NULL,          -- e.g. "I30415.json.schedulesdirect.org"
+    channel TEXT NOT NULL,             -- e.g. "2.1"
+    UNIQUE(station_id, channel)
+);
+"""
+    create_schedule = """
+CREATE TABLE IF NOT EXISTS schedule (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_id INTEGER NOT NULL,
+    start_date TEXT NOT NULL,          -- ISO 8601: '2026-01-12T06:00:00+0000'
+    end_date TEXT NOT NULL,            -- ISO 8601
+    FOREIGN KEY (channel_id) REFERENCES channel(id) ON DELETE CASCADE,
+    UNIQUE(channel_id, start_date)
+);
+"""
+    create_program = """
+CREATE TABLE IF NOT EXISTS program (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    schedule_id INTEGER NOT NULL,
+    sd_programid TEXT NOT NULL,        -- e.g. "EP017254570124"
+    title TEXT NOT NULL,
+    description TEXT,
+    genres TEXT,                       -- comma-separated, e.g. "series,Drama,Crime"
+    original_air_date TEXT,            -- ISO 8601 date only: '2025-01-10'
+    season INTEGER,                    -- nullable
+    episode INTEGER,                   -- nullable
+    FOREIGN KEY (schedule_id) REFERENCES schedule(id) ON DELETE CASCADE,
+    UNIQUE(schedule_id, sd_programid)
+);
+"""
+    create_person = """
+CREATE TABLE IF NOT EXISTS person (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    program_id INTEGER NOT NULL,
+    role TEXT NOT NULL,                -- e.g. "actor", "director", "writer"
+    name TEXT NOT NULL,
+    character_name TEXT,               -- nullable, only for actors
+    sd_name_id TEXT,                   -- nullable, Schedules Direct person ID if available
+    FOREIGN KEY (program_id) REFERENCES program(id) ON DELETE CASCADE
+);
+"""
     conn = sqlite3.connect(DB_PATH)
-    conn.execute('CREATE TABLE IF NOT EXISTS schedules (id INTEGER PRIMARY KEY, channel TEXT, start_ts INTEGER, stop_ts INTEGER, reason TEXT, created_at TEXT)')
-    conn.commit(); conn.close()
+    conn.execute(create_channel)
+    conn.execute(create_schedule)
+    conn.execute(create_program)
+    conn.execute(create_person)
+    conn.commit(); 
+    conn.close()
+    print('db init complete')
+
+def add_channels(channels):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.execute("select station_id from channel;")
+    rows = cursor.fetchall()
+    cur_chan_station_ids = [x[0] for x in rows]
+    print(f"current channels are {cur_chan_station_ids}")
+    cursor = conn.cursor()
+    for channel in channels:
+      if channel.get('stationID') not in cur_chan_station_ids:
+        sid = channel.get('stationID')
+        channel_dot_number = channel.get('channel')
+        cursor.execute(f"INSERT INTO channel (station_id, channel) VALUES (?, ?);", (sid, channel_dot_number))
+        print(f'adding channel {channel_dot_number}')
+#    conn.execute("INSERT INTO channel (station_id, channel) VALUES ('I30415.json.schedulesdirect.org', '2.1');")
+    conn.commit(); 
+    conn.close()
+    print('channels add complete')
+
+def add_schedules(schedules):
+    conn = sqlite3.connect(DB_PATH)
+#INSERT INTO schedule (channel_id, start_date, end_date) VALUES (1, '2026-01-12T06:00:00+0000', '2026-01-12T07:00:00+0000');
+    conn.commit(); 
+    conn.close()
+    print('schedules add complete')
+
+def add_programs(programs):
+    conn = sqlite3.connect(DB_PATH)
+#INSERT INTO program (schedule_id, sd_programid, title, description, genres, original_air_date, season, episode)
+#           VALUES (1, 'EP017254570124', 'Father Brown', 'Father Brown...', 'series,Drama,Crime', '2025-01-10', 11, 2);
+    conn.commit(); 
+    conn.close()
+    print('programs add complete')
+
+def add_persons(persons):
+    conn = sqlite3.connect(DB_PATH)
+#INSERT INTO person (program_id, role, name, character_name) VALUES (1, 'actor', 'Mark Williams', 'Father Brown');
+    conn.commit(); 
+    conn.close()
+    print('persons add complete')
+
+def get_token():
+    resp = requests.post(f"{SD_URL}/token", json={'username': SD_USER, 'password': SD_PASS})
+    if not resp.ok:
+      raise Exception('get token call failed')
+    token = resp.json().get('token')
+    if not token: 
+      raise Exception('cannot get token from schedule direct')
+    return token 
+
+
+def gather_schedule():
+    token = get_token()
+
+    status_url = f"{SD_URL}/status"
+    status_headers = {'token': token}
+    print(f'status headers is {status_headers}')
+    resp = requests.get(status_url, headers=status_headers)
+    if not resp.ok:
+      raise Exception('cannot get status')
+    lineups = resp.json().get('lineups', [])
+    if not lineups:
+      raise Exception('no lineups found for sd account')
+    lineup_id = lineups[0].get('lineup')
+    print(f'lineup id is {lineup_id}')
+    
+    channels_url = f"{SD_URL}/lineups/{lineup_id}"
+    resp = requests.get(channels_url, headers=status_headers)
+    if not resp.ok:
+      raise Exception('cannot get channels')
+    channels = resp.json().get('map', [])
+    if not channels:
+      raise Exception('empty channels list found for sd account')
+ 
+    schedule_url = f"{SD_URL}/schedules"
+    start_date = datetime.now().strftime('%Y-%m-%d') # TODO check local db, don't get what we already have
+    end_date = (datetime.now() + timedelta(days=DAYS_TO_FETCH)).strftime('%Y-%m-%d')
+    request_obj = []
+    for channel in channels:
+      request_obj.append({'stationID': channel.get('stationID'), 'date': [start_date, end_date]})
+    resp = requests.post(f"{SD_URL}/schedules", json=request_obj, headers=status_headers)
+    if not resp.ok:
+      raise Exception('cannot get schedule')
+    schedules = resp.json()
+
+    program_ids = set()
+    for station in schedules:
+      for program in station.get('programs', []):
+        program_ids.add(program.get('programID'))     
+    program_ids = list(program_ids)
+    print(f'gilly [{len(program_ids)}]')
+    
+    # batch schedule requests in less than 5000 units
+    program_url = f"{SD_URL}/programs"
+    programs = []
+    for i in range(0, len(program_ids), 4500):
+        one_batch = program_ids[i:i + 4500]
+        resp = requests.post(f"{SD_URL}/programs", json=one_batch, headers=status_headers)
+        if not resp.ok:
+          raise Exception('cannot get programs, starting at index {i}')
+        program_batch = resp.json()
+        programs += program_batch  # this will get to be pretty big, batch it if it crashes
+
+    print(f'fetched [{len(programs)}] programs')
+
+
+
+
+
+#channel - id, station_id, channel
+#  schedule  - id, channel_id, start_date, end_date
+#    program - id, schedule_id, sd_programid, title, description, genres, original_air_date, season, episode
+#      person - id, program_id, role, name, character_name, sd_name_id
+
+# NOW PERSIST THEM
+    add_channels(channels)
+#    add_schedules(schedules)
+#    add_programs(programs)
+
+#    add_persons(persons)
+
+    
+
+
+
+
+
+
+
+    return
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 def enrich_with_imdb(title: str) -> str:
     try:
@@ -41,36 +242,6 @@ def enrich_with_imdb(title: str) -> str:
         return "IMDb: No match found"
     except:
         return "IMDb: Lookup failed"
-
-def fetch_epg():
-    # Get all channels
-    channels_resp = requests.get(f"{TVH_URL}/api/channel/grid?limit=500", auth=TVH_AUTH)
-    channels = channels_resp.json().get('entries', [])
-    print(f"Found {len(channels)} channels")
-
-    all_events = []
-    for ch in channels:
-        uuid = ch['uuid']
-        name = ch['name']
-        # NO start/end – just large limit + asc sort
-        url = f"{TVH_URL}/api/epg/events/grid?channel={uuid}&limit=999999&dir=asc"
-        resp = requests.get(url, auth=TVH_AUTH).json()
-        events = resp.get('entries', [])
-        if events:
-            print(f"{name}: {len(events)} events")
-            all_events.extend(events)
-    
-    # Filter to future events manually
-    now = int(time.time())
-    one_hour = now + 3600
-    future_events = [e for e in all_events if (e['start'] < one_hour and e['start'] > now)]
-    future_events.sort(key=lambda x: x['start'])  # Earliest first
-    future_events.sort(key=lambda item: (
-                          int(item['channelNumber'].split('.')[0]),  # major number
-                          int(item['channelNumber'].split('.')[1])   # subchannel
-                      ))
-    print(f"Future events (next hour): {len(future_events)}")
-    return future_events
 
 def should_record(prompt):
     resp = ollama_client.chat(model='mistral:7b-instruct-q5_K_M', messages=[{'role':'user','content':prompt}])
@@ -133,17 +304,21 @@ def log_mlflow(events_checked, scheduled, results):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--mode', default='schedule', choices=['schedule', 'test-epg'])
+    parser.add_argument('--mode', default='schedule', choices=['schedule', 'test-epg', '1', '2', '3', '4'])
     args = parser.parse_args()
-    init_db()
+
+    if args.mode == '1':
+        print(f"=+=+=+=+=+=+=+=+ gathering schedule =+=+=+=+=+=+=+=+")
+        init_db()
+        schedule = gather_schedule()
 
     if args.mode == 'schedule':
         print(f"=+=+=+=+=+=+=+=+ Filtering EPG events starting in the next hour based on this prompt: {CUSTOM_PROMPT} =+=+=+=+=+=+=+=+")
         summary_obj = {'prompt': CUSTOM_PROMPT, 'shows': []}
-        events = fetch_epg()  # future_events list
         events_checked = len(events)
         scheduled = 0
         all_show_objects = []
+        events = []
         for event in events:
             start_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(event['start']))
             imdb_info = enrich_with_imdb(event['title'])
@@ -170,8 +345,4 @@ if __name__ == '__main__':
         log_mlflow(events_checked, scheduled, all_show_objects)
         print(f"Checked {events_checked} events, scheduled {scheduled}")
     elif args.mode == 'test-epg':
-      events = fetch_epg()
-      if events:
-          print(json.dumps(events[:3], indent=2))
-      else:
-          print("No future events found")
+      print("No future events found")
