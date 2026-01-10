@@ -111,13 +111,18 @@ def get_channels(conn):
 #    print(f"current channels are {channels}")
     return channels
 
+def get_programs_full(conn):
+    cursor = conn.execute("select * from program;")
+    rows = cursor.fetchall()
+    return programs
+
 def get_programs(conn):
     cursor = conn.execute("select id, sd_programid from program;")
     rows = cursor.fetchall()
     programs = {}
     for x in rows:
       programs[x[0]] = x[1]  # key = sql id of the program,    value = program id of the channel in schedule direct
-    print(f"current programs are {programs}")
+#    print(f"current programs are {programs}")
     return programs
 
 def get_schedule_dates(conn):
@@ -134,18 +139,20 @@ def get_schedule_dates(conn):
     print(f"current schedules are {cur_schedules}")
     return cur_schedules
 
-def get_schedule_dates_by_chan_id(conn):
-    cursor = conn.execute("select channel_id, start_date from schedule;")
+def get_schedule_dates_by_chan_prog_id(conn):
+    cursor = conn.execute("select channel_id, program_id, start_date from schedule;")
     rows = cursor.fetchall()
     cur_schedules = {}
     for x in rows:
       chan_id = x[0]
-      start_date = x[1]
-      if chan_id not in cur_schedules:
-        cur_schedules[chan_id] = []
-      if start_date not in cur_schedules[chan_id]:
-        cur_schedules[chan_id].append(start_date)
-    print(f"current schedules by chan id are {cur_schedules}")
+      prog_id = x[1]
+      start_date = x[2]
+      combo_key = f'{chan_id}-{prog_id}'
+      if combo_key not in cur_schedules:
+        cur_schedules[combo_key] = []
+      if start_date not in cur_schedules[combo_key]:
+        cur_schedules[combo_key].append(start_date)
+    print(f"current schedules by chan+prog id are {cur_schedules}")
     return cur_schedules
 
 def get_program_sd_programids(conn):
@@ -158,31 +165,41 @@ def get_program_sd_programids(conn):
     return program_ids
 
 def add_schedules(schedules):
+    add_counter = 0
     conn = sqlite3.connect(DB_PATH)
     cur_channels = get_channels(conn)
-    schedule_dates_by_chan_id = get_schedule_dates_by_chan_id(conn)
+    cur_programs = get_programs(conn)
+
+    schedule_dates_by_chan_prog_id = get_schedule_dates_by_chan_prog_id(conn)
 
     cursor = conn.cursor()
-    for schedule in schedules:
-      sched_station_id = schedule.get('stationID')
-      print(f'new schedule record for station id: {sched_station_id}')
+    for station in schedules:
+      sched_station_id = station.get('stationID')
+#      print(f'new schedule record for station id: {sched_station_id}')
       if sched_station_id not in cur_channels.values():
-        print(f'skipping schedule {sched_station_id} - it is for a channel we dont know about')
+        print(f'skipping schedule for station {sched_station_id} - it is for a channel we dont know about')
         continue
       chan_id = [key for key,val in cur_channels.items() if val == sched_station_id][0] # doing this in memory to avoid a flood of sql calls
 
-      for program in schedule.get('programs', []):
+      for program in station.get('programs', []):
+        sched_prog_id = program.get('programID')
         sched_start_date = program.get('airDateTime')
-        if chan_id in schedule_dates_by_chan_id and sched_start_date in schedule_dates_by_chan_id[chan_id]:
-          print(f'  skipping preexisting schedule for {sched_station_id}  {sched_start_date}')
-          continue  # already scheduled
-        # TODO build the sched end date and test on date in range, also add end date to table below
-#        print(f'adding to schedule ===== {sched_station_id}  {sched_start_date}')
-        cursor.execute(f"INSERT INTO schedule (channel_id, start_date, end_date) VALUES (?, ?, ?);", (chan_id, sched_start_date, sched_start_date))
+        sched_duration = program.get('duration', 0)
+        st = datetime.strptime(sched_start_date, '%Y-%m-%dT%H:%M:%S%z')
+        et = st + timedelta(seconds=sched_duration)
+        sched_end_date = et.strftime('%Y-%m-%dT%H:%M:%S%z')
+        prog_id = [key for key,val in cur_programs.items() if val == sched_prog_id][0] # doing this in memory to avoid a flood of sql calls
+        combo_key = f'{chan_id}-{prog_id}'
 
+        if combo_key in schedule_dates_by_chan_prog_id and sched_start_date in schedule_dates_by_chan_prog_id[combo_key]:
+#          print(f'  skipping preexisting schedule for {sched_station_id}  {sched_start_date}')
+          continue  # already scheduled
+#        print(f'adding to schedule ===== {chan_id, prog_id, sched_start_date, sched_end_date}')
+        cursor.execute(f"INSERT INTO schedule (channel_id, program_id, start_date, end_date) VALUES (?, ?, ?, ?);", (chan_id, prog_id, sched_start_date, sched_end_date))
+        add_counter += 1
     conn.commit(); 
     conn.close()
-    print('schedules add complete')
+    print(f'{add_counter} airings added')
 
 def add_programs(programs):
     add_counter = 0
@@ -248,6 +265,8 @@ def get_token():
     return token 
 
 def gather_schedule():
+    # pulls from schedule direct, rebuilds local db
+    print(f"=+=+=+=+=+=+=+=+ gathering schedule =+=+=+=+=+=+=+=+")
     token = get_token()
 
     status_url = f"{SD_URL}/status"
@@ -284,7 +303,7 @@ def gather_schedule():
       for program in station.get('programs', []):
         program_ids.add(program.get('programID'))     
     program_ids = list(program_ids)
-    print(f'gilly [{len(program_ids)}]')
+#    print(f'gilly [{len(program_ids)}]')
     
     # batch schedule requests in less than 5000 units
     program_url = f"{SD_URL}/programs"
@@ -299,44 +318,16 @@ def gather_schedule():
 
     print(f'fetched [{len(programs)}] programs')
 
-
-
-
-
-#channel - id, station_id, channel
-#  schedule  - id, channel_id, start_date, end_date
-#    program - id, schedule_id, sd_programid, title, description, genres, original_air_date, season, episode
-#      person - id, program_id, role, name, character_name, sd_name_id
-
-# NOW PERSIST THEM
     add_channels(channels)
-#    add_schedules(schedules)
     add_programs(programs)
-
+    add_schedules(schedules)
 #    add_persons(persons)
-
-    
-
-
-
-
-
-
-
     return
 
 
-
-
-
-
-
-
-
-
-
-
-
+def enhance_schedule(prompt):
+    print(f"=+=+=+=+=+=+=+=+ ehnance schedule =+=+=+=+=+=+=+=+")
+    print(f' booga prompt is {prompt}')
 
 
 
@@ -416,13 +407,15 @@ def log_mlflow(events_checked, scheduled, results):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode', default='schedule', choices=['schedule', 'test-epg', '1', '2', '3', '4'])
+    parser.add_argument('--prompt')
     args = parser.parse_args()
 
+    init_db()
     if args.mode == '1':
-        print(f"=+=+=+=+=+=+=+=+ gathering schedule =+=+=+=+=+=+=+=+")
-        init_db()
-        schedule = gather_schedule()
-
+        gather_schedule()
+    if args.mode == '2':
+        prompt = args.prompt
+        enhance_schedule(prompt)
     if args.mode == 'schedule':
         print(f"=+=+=+=+=+=+=+=+ Filtering EPG events starting in the next hour based on this prompt: {CUSTOM_PROMPT} =+=+=+=+=+=+=+=+")
         summary_obj = {'prompt': CUSTOM_PROMPT, 'shows': []}
