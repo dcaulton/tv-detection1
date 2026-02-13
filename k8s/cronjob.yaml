@@ -4,7 +4,7 @@ metadata:
   name: tv-detection1-scheduler
   namespace: tv-detection
 spec:
-  schedule: "*/30 * * * *"
+  schedule: "* */4 * * *"
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 1
   jobTemplate:

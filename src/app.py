@@ -114,7 +114,9 @@ def get_channels(conn):
 def get_programs_full(conn):
     cursor = conn.execute("select * from program;")
     rows = cursor.fetchall()
-    return programs
+    names = [description[0] for description in cursor.description]
+    return_list = [dict(zip(names, x)) for x in rows]
+    return return_list
 
 def get_programs(conn):
     cursor = conn.execute("select id, sd_programid from program;")
@@ -325,9 +327,23 @@ def gather_schedule():
     return
 
 
-def enhance_schedule(prompt):
-    print(f"=+=+=+=+=+=+=+=+ ehnance schedule =+=+=+=+=+=+=+=+")
-    print(f' booga prompt is {prompt}')
+def get_items_to_enhance():
+    # for now, just get all serialized tv shows in one array, all movies in another, and return the first 3 from both
+    print(f"=+=+=+=+=+=+=+=+ fetching items to enhance =+=+=+=+=+=+=+=+")
+    conn = sqlite3.connect(DB_PATH)
+    cur_programs = get_programs_full(conn)
+    for program in cur_programs:
+        import pdb; pdb.set_trace()
+        assert False
+
+
+
+
+
+# MAMA 
+#
+#
+#
 
 
 
@@ -414,8 +430,7 @@ if __name__ == '__main__':
     if args.mode == '1':
         gather_schedule()
     if args.mode == '2':
-        prompt = args.prompt
-        enhance_schedule(prompt)
+        get_items_to_enhance()
     if args.mode == 'schedule':
         print(f"=+=+=+=+=+=+=+=+ Filtering EPG events starting in the next hour based on this prompt: {CUSTOM_PROMPT} =+=+=+=+=+=+=+=+")
         summary_obj = {'prompt': CUSTOM_PROMPT, 'shows': []}
